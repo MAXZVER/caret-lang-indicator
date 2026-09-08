@@ -1,0 +1,6 @@
+﻿# Build output
+CaretLangIndicator.exe
+*.pdb
+
+# Debug leftovers
+*.log
