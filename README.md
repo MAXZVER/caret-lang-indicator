@@ -69,8 +69,16 @@ The exe is unsigned, so SmartScreen will warn on first run — "More info", then
 | `-OffsetY` | pixels | `2` | vertical nudge |
 | `-FieldGap` | pixels | `12` | gap from the edge of a field |
 | `-OnlyWhenCaps` | — | off | show only while Caps Lock is on |
+| `-OnlyOnChange` | — | off | stay hidden, appear for a moment when the layout changes |
+| `-ShowMs` | ms | `1200` | how long it stays visible in that mode |
+| `-Switcher` | — | off | show every installed layout in a row with a sliding selection, like the macOS input source HUD |
 | `-Glass` | — | off | Windows 11 acrylic instead of the flat dark pill |
-| `-Interval` | ms | `120` | polling interval |
+| `-Interval` | ms | `120` | polling interval (`15` when `-OnlyOnChange` is on) |
+
+The macOS-like setup is `-OnlyOnChange -Switcher`: nothing on screen while you
+type, and a HUD with the selection sliding to the new layout at the moment you
+switch. It also costs almost nothing at rest, since UI Automation is only
+touched when the layout actually changes.
 
 `-Anchor Corner` parks the badge in a fixed screen corner, where it never
 covers anything. `-OnlyWhenCaps` gives the macOS arrangement: layout in a menu
