@@ -36,22 +36,24 @@ report. Three levels, in order of precision:
 
 ## Install
 
-Download `CaretLangIndicator.exe` and `install.ps1` from the
-[latest release](../../releases/latest), then:
+Download `CaretLangIndicator.exe` from the
+[latest release](../../releases/latest) and double-click it. That is the whole
+procedure — one file, no scripts, no installer bundle.
+
+It asks whether to install. Say yes and it copies itself to
+`%LOCALAPPDATA%\CaretLangIndicator` and starts with Windows from then on. Say
+no and it just runs from where it is, changing nothing.
+
+No admin rights, no service, nothing written outside your own profile.
 
 ```powershell
-.\install.ps1
+CaretLangIndicator.exe -Install -OnlyWhenCaps   # install silently with options
+CaretLangIndicator.exe -Uninstall               # remove it again
+CaretLangIndicator.exe -NoPrompt                # run once, never ask
 ```
 
-It copies the exe to `%LOCALAPPDATA%\CaretLangIndicator`, registers it in
-Startup and launches it. No admin rights, no services, nothing written outside
-your own profile.
-
-```powershell
-.\install.ps1 -Arguments '-OnlyWhenCaps'   # pass your own options
-.\install.ps1 -NoAutostart                 # install without adding to Startup
-.\uninstall.ps1                            # remove everything
-```
+Options given to `-Install` are stored in the Startup shortcut, so they survive
+reboots.
 
 The exe is unsigned, so SmartScreen will warn on first run — "More info", then
 "Run anyway". Or build it yourself, which takes one command.

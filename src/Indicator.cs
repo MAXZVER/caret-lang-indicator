@@ -5,7 +5,9 @@
 // Build with the csc.exe that ships with Windows - see build.ps1.
 
 using System;
+using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
@@ -102,26 +104,42 @@ static class Options
     public static bool OnlyWhenCaps;
     public static bool Glass;
 
+    public static bool Install;
+    public static bool Uninstall;
+    public static bool NoPrompt;
+
+    // the display options, rebuilt as a command line so the Startup shortcut
+    // keeps whatever the user asked for
+    public static string PassThrough = "";
+
     public static void Parse(string[] args)
     {
+        var kept = new List<string>();
+
         for (int i = 0; i < args.Length; i++)
         {
             string a = args[i].TrimStart('-', '/').ToLowerInvariant();
             string next = (i + 1 < args.Length) ? args[i + 1] : null;
             switch (a)
             {
-                case "anchor":       Anchor = next; i++; break;
-                case "valign":       VAlign = next; i++; break;
-                case "side":         Side = next; i++; break;
-                case "fallback":     Fallback = next; i++; break;
-                case "offsetx":      OffsetX = int.Parse(next); i++; break;
-                case "offsety":      OffsetY = int.Parse(next); i++; break;
-                case "fieldgap":     FieldGap = int.Parse(next); i++; break;
-                case "interval":     Interval = int.Parse(next); i++; break;
-                case "onlywhencaps": OnlyWhenCaps = true; break;
-                case "glass":        Glass = true; break;
+                case "anchor":       Anchor = next; kept.Add("-Anchor"); kept.Add(next); i++; break;
+                case "valign":       VAlign = next; kept.Add("-VAlign"); kept.Add(next); i++; break;
+                case "side":         Side = next; kept.Add("-Side"); kept.Add(next); i++; break;
+                case "fallback":     Fallback = next; kept.Add("-Fallback"); kept.Add(next); i++; break;
+                case "offsetx":      OffsetX = int.Parse(next); kept.Add("-OffsetX"); kept.Add(next); i++; break;
+                case "offsety":      OffsetY = int.Parse(next); kept.Add("-OffsetY"); kept.Add(next); i++; break;
+                case "fieldgap":     FieldGap = int.Parse(next); kept.Add("-FieldGap"); kept.Add(next); i++; break;
+                case "interval":     Interval = int.Parse(next); kept.Add("-Interval"); kept.Add(next); i++; break;
+                case "onlywhencaps": OnlyWhenCaps = true; kept.Add("-OnlyWhenCaps"); break;
+                case "glass":        Glass = true; kept.Add("-Glass"); break;
+
+                case "install":      Install = true; break;
+                case "uninstall":    Uninstall = true; break;
+                case "noprompt":     NoPrompt = true; break;
             }
         }
+
+        PassThrough = string.Join(" ", kept.ToArray());
     }
 }
 
@@ -417,12 +435,169 @@ class Badge
     }
 }
 
+// One file is the whole product: it installs and removes itself, so nobody
+// has to keep a PowerShell script next to it or fight the execution policy.
+static class Installer
+{
+    public const string AppName  = "CaretLangIndicator";
+    public const string LinkName = "Caret Language Indicator.lnk";
+
+    public static string InstallDir
+    {
+        get
+        {
+            return Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), AppName);
+        }
+    }
+
+    public static string InstalledExe { get { return Path.Combine(InstallDir, AppName + ".exe"); } }
+
+    public static string ShortcutPath
+    {
+        get
+        {
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), LinkName);
+        }
+    }
+
+    public static string CurrentExe
+    {
+        get { return System.Reflection.Assembly.GetExecutingAssembly().Location; }
+    }
+
+    public static bool RunningFromInstallDir
+    {
+        get
+        {
+            try
+            {
+                return string.Equals(Path.GetFullPath(CurrentExe), Path.GetFullPath(InstalledExe),
+                                     StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
+        }
+    }
+
+    public static bool IsInstalled { get { return File.Exists(InstalledExe); } }
+
+    // WScript.Shell through late binding: no COM reference to add, no extra
+    // assembly to ship
+    static void CreateShortcut(string linkPath, string target, string arguments, string workDir)
+    {
+        Type shellType = Type.GetTypeFromProgID("WScript.Shell");
+        object shell = Activator.CreateInstance(shellType);
+        try
+        {
+            object link = shellType.InvokeMember("CreateShortcut",
+                System.Reflection.BindingFlags.InvokeMethod, null, shell, new object[] { linkPath });
+            Type linkType = link.GetType();
+            linkType.InvokeMember("TargetPath", System.Reflection.BindingFlags.SetProperty, null, link, new object[] { target });
+            linkType.InvokeMember("Arguments", System.Reflection.BindingFlags.SetProperty, null, link, new object[] { arguments ?? "" });
+            linkType.InvokeMember("WorkingDirectory", System.Reflection.BindingFlags.SetProperty, null, link, new object[] { workDir });
+            linkType.InvokeMember("Description", System.Reflection.BindingFlags.SetProperty, null, link,
+                new object[] { "Keyboard layout and Caps Lock badge next to the caret" });
+            linkType.InvokeMember("Save", System.Reflection.BindingFlags.InvokeMethod, null, link, null);
+        }
+        finally
+        {
+            if (shell != null) Marshal.ReleaseComObject(shell);
+        }
+    }
+
+    static void StopOtherInstances()
+    {
+        int me = System.Diagnostics.Process.GetCurrentProcess().Id;
+        foreach (var p in System.Diagnostics.Process.GetProcessesByName(AppName))
+        {
+            if (p.Id == me) continue;
+            try { p.Kill(); p.WaitForExit(5000); } catch { }
+        }
+    }
+
+    public static void Install(string passThroughArgs, bool autostart)
+    {
+        StopOtherInstances();
+        Directory.CreateDirectory(InstallDir);
+
+        if (!RunningFromInstallDir)
+            File.Copy(CurrentExe, InstalledExe, true);
+
+        if (autostart)
+            CreateShortcut(ShortcutPath, InstalledExe, passThroughArgs, InstallDir);
+
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = InstalledExe,
+            Arguments = passThroughArgs ?? "",
+            WorkingDirectory = InstallDir,
+            UseShellExecute = false
+        });
+    }
+
+    public static void Uninstall()
+    {
+        StopOtherInstances();
+        try { if (File.Exists(ShortcutPath)) File.Delete(ShortcutPath); } catch { }
+
+        // cannot delete the exe while it is the one running - hand that to cmd
+        if (RunningFromInstallDir)
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = "/c timeout /t 2 /nobreak >nul & rmdir /s /q \"" + InstallDir + "\"",
+                CreateNoWindow = true,
+                UseShellExecute = false
+            });
+        }
+        else
+        {
+            try { if (Directory.Exists(InstallDir)) Directory.Delete(InstallDir, true); } catch { }
+        }
+    }
+}
+
 static class Program
 {
     [STAThread]
     static void Main(string[] args)
     {
         Options.Parse(args);
+
+        if (Options.Uninstall)
+        {
+            Installer.Uninstall();
+            Forms.MessageBox.Show("Caret Language Indicator has been removed.", "Caret Language Indicator",
+                Forms.MessageBoxButtons.OK, Forms.MessageBoxIcon.Information);
+            return;
+        }
+
+        if (Options.Install)
+        {
+            Installer.Install(Options.PassThrough, true);
+            return;
+        }
+
+        // Double-clicked from a Downloads folder: offer to install rather than
+        // silently running once and disappearing after the next reboot.
+        if (!Options.NoPrompt && !Installer.RunningFromInstallDir && !Installer.IsInstalled)
+        {
+            var answer = Forms.MessageBox.Show(
+                "Install Caret Language Indicator for your user account and start it with Windows?\r\n\r\n" +
+                "It will be copied to your local app data folder. No administrator rights are needed, " +
+                "and you can remove it later by running this file with -Uninstall.",
+                "Caret Language Indicator",
+                Forms.MessageBoxButtons.YesNoCancel, Forms.MessageBoxIcon.Question);
+
+            if (answer == Forms.DialogResult.Cancel) return;
+            if (answer == Forms.DialogResult.Yes)
+            {
+                Installer.Install(Options.PassThrough, true);
+                return;
+            }
+            // "No" simply runs it from here, without installing
+        }
 
         bool created;
         using (new Mutex(true, "Local\\CaretLangIndicator", out created))
