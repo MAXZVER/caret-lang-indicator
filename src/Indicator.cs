@@ -248,10 +248,17 @@ static class Detector
     // Automation. Safe to run on the dispatcher every tick.
     public static void ReadQuick(out string layout, out bool caps)
     {
+        IntPtr ignored;
+        ReadQuick(out layout, out caps, out ignored);
+    }
+
+    public static void ReadQuick(out string layout, out bool caps, out IntPtr foreground)
+    {
         layout = "??";
         caps = (Native.GetKeyState(Native.VK_CAPITAL) & 1) == 1;
 
         IntPtr fg = Native.GetForegroundWindow();
+        foreground = fg;
         if (fg == IntPtr.Zero) return;
         int procId;
         int tid = Native.GetWindowThreadProcessId(fg, out procId);
@@ -810,6 +817,11 @@ static class Program
     // -OnlyOnChange bookkeeping
     static string lastLayout;
     static bool lastCaps;
+    // Windows keeps the input language per thread, so the layout reported for
+    // the foreground window changes when you merely move to another window -
+    // switching virtual desktops does it too. Remembering which window the
+    // last reading came from is what tells a real switch from that.
+    static IntPtr lastForeground;
     static int showUntil;
     static double lastShownX = double.NaN, lastShownY;
 
@@ -889,8 +901,8 @@ static class Program
             {
                 // Cheap pass first — this is all that runs while the badge is
                 // hidden, so idle cost is three same-process calls per tick.
-                string layout; bool caps;
-                Detector.ReadQuick(out layout, out caps);
+                string layout; bool caps; IntPtr foreground;
+                Detector.ReadQuick(out layout, out caps, out foreground);
 
                 // Holding the switch modifier brings up the Windows input
                 // switcher flyout, which takes the foreground. Its thread has no
@@ -911,7 +923,16 @@ static class Program
                     if (old != null) old.Dispose();
                 }
 
-                bool changed = lastLayout != null && (layout != lastLayout || caps != lastCaps);
+                // A different layout under a different window is not a switch:
+                // it is the same two layouts sitting where they always were,
+                // seen from the other side. Caps Lock is global, so a change
+                // there still counts even when the window moved.
+                bool windowMoved   = foreground != lastForeground;
+                bool layoutChanged = lastLayout != null && layout != lastLayout && !windowMoved;
+                bool capsChanged   = lastLayout != null && caps != lastCaps;
+                bool changed = layoutChanged || capsChanged;
+
+                lastForeground = foreground;
                 lastLayout = layout;
                 lastCaps = caps;
 
