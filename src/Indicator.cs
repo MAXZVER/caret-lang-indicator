@@ -6,9 +6,11 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows;
 using System.Windows.Automation;
@@ -117,6 +119,9 @@ static class Options
     public static bool Install;
     public static bool Uninstall;
     public static bool NoPrompt;
+    // -Log <file>: record what the panel decides and why, so a "it is always
+    // on" report can be checked instead of guessed at
+    public static string LogPath;
 
     // the display options, rebuilt as a command line so the Startup shortcut
     // keeps whatever the user asked for
@@ -149,6 +154,7 @@ static class Options
                 case "install":      Install = true; break;
                 case "uninstall":    Uninstall = true; break;
                 case "noprompt":     NoPrompt = true; break;
+                case "log":          LogPath = next; i++; break;
             }
         }
 
@@ -680,6 +686,26 @@ static class TrayArt
     }
 }
 
+static class Log
+{
+    static readonly object gate = new object();
+
+    public static void Write(string format, params object[] args)
+    {
+        if (string.IsNullOrEmpty(Options.LogPath)) return;
+        try
+        {
+            lock (gate)
+            {
+                File.AppendAllText(Options.LogPath,
+                    DateTime.Now.ToString("HH:mm:ss.fff") + "  " + string.Format(format, args) +
+                    Environment.NewLine);
+            }
+        }
+        catch { }
+    }
+}
+
 // One file is the whole product: it installs and removes itself, so nobody has
 // to keep a PowerShell script next to it or fight the execution policy.
 static class Installer
@@ -829,6 +855,69 @@ static class Program
     static System.Drawing.Icon trayIcon;
     static string trayLayout;
     static bool trayCaps;
+    static Forms.ToolStripMenuItem layoutItem;
+
+    // --- optional: a macOS modifier layout built on PowerToys ----------------
+    // Not part of the indicator's own job, but the two belong to the same
+    // keyboard setup, and this is the tray icon already sitting there. If
+    // PowerToys is absent the menu entry simply stays hidden.
+
+    static string PowerToysSettings()
+    {
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            @"Microsoft\PowerToys\settings.json");
+    }
+
+    static bool PowerToysPresent() { return File.Exists(PowerToysSettings()); }
+
+    static bool IsLayoutOn()
+    {
+        try
+        {
+            string s = File.ReadAllText(PowerToysSettings());
+            Match m = Regex.Match(s, "\"Keyboard Manager\"\\s*:\\s*(true|false)");
+            return m.Success && m.Groups[1].Value == "true";
+        }
+        catch { return false; }
+    }
+
+    static void ToggleLayout()
+    {
+        string path = PowerToysSettings();
+        try
+        {
+            string s = File.ReadAllText(path);
+            string want = IsLayoutOn() ? "false" : "true";
+            string n = Regex.Replace(s, "(\"Keyboard Manager\"\\s*:\\s*)(true|false)", "${1}" + want);
+            if (n == s) throw new Exception("could not find the Keyboard Manager flag");
+            File.WriteAllText(path, n, new System.Text.UTF8Encoding(false));
+            Log.Write("layout toggled to {0}", want);
+        }
+        catch (Exception ex)
+        {
+            Forms.MessageBox.Show("Could not change the layout:\r\n" + ex.Message,
+                "Caret Language Indicator", Forms.MessageBoxButtons.OK, Forms.MessageBoxIcon.Warning);
+            return;
+        }
+
+        // PowerToys reads the flag at startup, so it has to come back round.
+        try
+        {
+            string exe = null;
+            foreach (Process p in Process.GetProcessesByName("PowerToys"))
+            {
+                try { exe = p.MainModule.FileName; break; } catch { }
+            }
+            foreach (Process p in Process.GetProcesses())
+            {
+                if (p.ProcessName.StartsWith("PowerToys", StringComparison.OrdinalIgnoreCase))
+                    try { p.Kill(); } catch { }
+            }
+            if (exe != null) { Thread.Sleep(1500); Process.Start(exe); }
+        }
+        catch { }
+    }
 
     [STAThread]
     static void Main(string[] args)
@@ -874,6 +963,10 @@ static class Program
         {
             if (!created) return;
 
+            Log.Write("start: OnlyOnChange={0} Switcher={1} ShowMs={2} Interval={3} Anchor={4} exe={5}",
+                      Options.OnlyOnChange, Options.Switcher, Options.ShowMs, Options.Interval,
+                      Options.Anchor, Installer.CurrentExe);
+
             Badge badge = new Badge();
             Forms.Screen screen = Forms.Screen.PrimaryScreen;
             System.Drawing.Rectangle work = screen.WorkingArea;
@@ -884,6 +977,16 @@ static class Program
             tray.Icon = trayIcon;
             tray.Text = "Caret language indicator";
             Forms.ContextMenuStrip menu = new Forms.ContextMenuStrip();
+            if (PowerToysPresent())
+            {
+                layoutItem = new Forms.ToolStripMenuItem("macOS keyboard layout");
+                layoutItem.Click += delegate { ToggleLayout(); };
+                menu.Items.Add(layoutItem);
+                menu.Items.Add(new Forms.ToolStripSeparator());
+                // Read the state when the menu opens rather than caching it:
+                // PowerToys' own UI can change it behind our back.
+                menu.Opening += delegate { layoutItem.Checked = IsLayoutOn(); };
+            }
             menu.Items.Add("Exit").Click += delegate
             {
                 tray.Visible = false;
@@ -932,13 +1035,23 @@ static class Program
                 bool capsChanged   = lastLayout != null && caps != lastCaps;
                 bool changed = layoutChanged || capsChanged;
 
+                if (layout != lastLayout || caps != lastCaps || windowMoved)
+                {
+                    Log.Write("layout {0}->{1} caps={2} windowMoved={3} => changed={4}",
+                              lastLayout ?? "-", layout, caps, windowMoved, changed);
+                }
+
                 lastForeground = foreground;
                 lastLayout = layout;
                 lastCaps = caps;
 
                 if (Options.OnlyOnChange)
                 {
-                    if (changed) showUntil = Environment.TickCount + Options.ShowMs;
+                    if (changed)
+                    {
+                        showUntil = Environment.TickCount + Options.ShowMs;
+                        Log.Write("SHOW for {0} ms", Options.ShowMs);
+                    }
                     if (unchecked(Environment.TickCount - showUntil) > 0)
                     {
                         badge.HideBadge();
