@@ -50,6 +50,7 @@ static class Native
     public struct MARGINS { public int Left, Right, Top, Bottom; }
 
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern int GetWindowThreadProcessId(IntPtr hWnd, out int pid);
     [DllImport("user32.dll")] public static extern IntPtr GetKeyboardLayout(int idThread);
     [DllImport("user32.dll")] public static extern int GetKeyboardLayoutList(int nBuff, [Out] IntPtr[] lpList);
@@ -882,6 +883,69 @@ static class Program
         catch { return false; }
     }
 
+    // Asked once, at install time. The indicator itself has no dependencies -
+    // only the layout switch needs PowerToys - so this informs rather than
+    // blocks, but it makes you tick the box so the requirement is not a
+    // surprise found later in a tray menu that does nothing.
+    static bool ConfirmPowerToysDependency()
+    {
+        if (PowerToysPresent()) return true;
+
+        Forms.Form f = new Forms.Form();
+        f.Text = "Caret Language Indicator";
+        f.FormBorderStyle = Forms.FormBorderStyle.FixedDialog;
+        f.StartPosition = Forms.FormStartPosition.CenterScreen;
+        f.MinimizeBox = false;
+        f.MaximizeBox = false;
+        f.ShowInTaskbar = false;
+        f.ClientSize = new System.Drawing.Size(500, 214);
+
+        Forms.Label msg = new Forms.Label();
+        msg.Text =
+            "PowerToys was not found on this computer.\r\n\r\n" +
+            "The indicator itself does not need it. The macOS keyboard layout does: " +
+            "PowerToys Keyboard Manager is what reorders the bottom-row modifiers and " +
+            "provides the text navigation, and the tray switch simply turns it on and off.\r\n\r\n" +
+            "Without PowerToys the indicator still shows the layout, but the switch will " +
+            "not appear in the tray menu.";
+        msg.SetBounds(16, 14, 468, 118);
+        f.Controls.Add(msg);
+
+        Forms.CheckBox cb = new Forms.CheckBox();
+        cb.Text = "I understand, and will install PowerToys myself";
+        cb.SetBounds(16, 138, 360, 22);
+        f.Controls.Add(cb);
+
+        Forms.Button get = new Forms.Button();
+        get.Text = "Get PowerToys";
+        get.SetBounds(16, 170, 120, 28);
+        get.Click += delegate
+        {
+            try { Process.Start("https://github.com/microsoft/PowerToys/releases/latest"); }
+            catch { }
+        };
+        f.Controls.Add(get);
+
+        Forms.Button ok = new Forms.Button();
+        ok.Text = "Continue";
+        ok.SetBounds(292, 170, 90, 28);
+        ok.Enabled = false;
+        ok.DialogResult = Forms.DialogResult.OK;
+        f.Controls.Add(ok);
+
+        Forms.Button cancel = new Forms.Button();
+        cancel.Text = "Cancel";
+        cancel.SetBounds(392, 170, 90, 28);
+        cancel.DialogResult = Forms.DialogResult.Cancel;
+        f.Controls.Add(cancel);
+
+        cb.CheckedChanged += delegate { ok.Enabled = cb.Checked; };
+        f.AcceptButton = ok;
+        f.CancelButton = cancel;
+
+        return f.ShowDialog() == Forms.DialogResult.OK;
+    }
+
     static void ToggleLayout()
     {
         string path = PowerToysSettings();
@@ -952,6 +1016,7 @@ static class Program
             if (answer == Forms.DialogResult.Cancel) return;
             if (answer == Forms.DialogResult.Yes)
             {
+                if (!ConfirmPowerToysDependency()) return;
                 Installer.Install(Options.PassThrough, true);
                 return;
             }
@@ -983,16 +1048,37 @@ static class Program
                 layoutItem.Click += delegate { ToggleLayout(); };
                 menu.Items.Add(layoutItem);
                 menu.Items.Add(new Forms.ToolStripSeparator());
-                // Read the state when the menu opens rather than caching it:
-                // PowerToys' own UI can change it behind our back.
-                menu.Opening += delegate { layoutItem.Checked = IsLayoutOn(); };
             }
             menu.Items.Add("Exit").Click += delegate
             {
                 tray.Visible = false;
                 Dispatcher.CurrentDispatcher.InvokeShutdown();
             };
-            tray.ContextMenuStrip = menu;
+
+            // A tray menu closes the instant it opens unless the process owns
+            // the foreground window, and this one deliberately has none: the
+            // badge is WS_EX_NOACTIVATE so it never steals focus while you
+            // type. So give the menu a hidden window to be activated on its
+            // behalf, and show it by hand rather than via ContextMenuStrip.
+            Forms.Form menuHost = new Forms.Form();
+            menuHost.ShowInTaskbar = false;
+            menuHost.FormBorderStyle = Forms.FormBorderStyle.None;
+            menuHost.Opacity = 0;
+            menuHost.Size = new System.Drawing.Size(1, 1);
+            menuHost.StartPosition = Forms.FormStartPosition.Manual;
+            menuHost.Location = new System.Drawing.Point(-32000, -32000);
+            IntPtr hostHandle = menuHost.Handle;      // forces creation
+
+            tray.MouseUp += delegate(object sender, Forms.MouseEventArgs e)
+            {
+                if (e.Button != Forms.MouseButtons.Right) return;
+                // Read the state as the menu opens rather than caching it:
+                // PowerToys' own UI can change it behind our back.
+                if (layoutItem != null) layoutItem.Checked = IsLayoutOn();
+                Native.SetForegroundWindow(hostHandle);
+                menu.Show(Forms.Cursor.Position);
+                menu.Focus();
+            };
             tray.Visible = true;
 
             // DispatcherTimer defaults to Background priority, which other work
