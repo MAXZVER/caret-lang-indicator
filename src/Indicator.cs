@@ -612,6 +612,12 @@ class Badge
         if (!shown)
         {
             if (Options.Glass) Win.Show(); else Win.Opacity = 1;
+            // Topmost is a band, not a position: a dock that keeps re-asserting
+            // itself sits above us inside it, and the panel then appears behind
+            // the dock whenever the caret is near the bottom of the screen.
+            // Toggling it moves this window to the front of that band.
+            Win.Topmost = false;
+            Win.Topmost = true;
             shown = true;
         }
     }
@@ -1241,15 +1247,32 @@ static class Program
                     lastShownX = x; lastShownY = y;
                     badge.ShowAt(x, y);
                 }
-                else if (Options.OnlyOnChange && !double.IsNaN(lastShownX)
-                         && unchecked(Environment.TickCount - showUntil) <= 0)
+                else if (Options.OnlyOnChange && unchecked(Environment.TickCount - showUntil) <= 0)
                 {
-                    // No anchor this pass - typically the input switcher flyout
-                    // holding the foreground while the modifier is down. Stay
-                    // where we were instead of blinking out mid-switch.
+                    // No anchor this pass. Either the input switcher flyout holds
+                    // the foreground while the modifier is down, or the layout was
+                    // changed with nothing text-like focused at all.
+                    //
+                    // Reuse wherever it last stood; and if it has never been shown,
+                    // centre it rather than skip. Requiring a previous position
+                    // meant that a first switch outside a text field left the
+                    // panel invisible for the rest of the session - nothing ever
+                    // recorded a position, so the fallback could never engage.
+                    if (double.IsNaN(lastShownX))
+                    {
+                        lastShownX = work.Left + (work.Width - w) / 2.0;
+                        lastShownY = work.Top + work.Height * 0.62;
+                    }
+                    Log.Write("render: no anchor, showing at {0},{1}", lastShownX, lastShownY);
                     badge.ShowAt(lastShownX, lastShownY);
                 }
-                else badge.HideBadge();
+                else
+                {
+                    Log.Write("render: HIDE  caret={0} field={1} show={2} until={3}",
+                              s.HasCaret, s.HasField, show,
+                              unchecked(Environment.TickCount - showUntil));
+                    badge.HideBadge();
+                }
             }
         }
     }
